@@ -2,15 +2,12 @@ import argparse
 import textwrap
 import threading
 from Pyro5.api import *
+import time
 
 RELEASED = 0
 WANTED = 1 
 HELD = 2
 
-# TODO 
-# TODO 
-# TODO 
-# TODO 
 
 parser = argparse.ArgumentParser(
     description="Cliente peer to peeim",
@@ -29,10 +26,13 @@ if args.name:
     print(f"Meu nome é {args.name}")
 
 
-class Node:
+class Node(object):
     def __init__(self,args):
         self.nome = args.name
         self.estado = RELEASED
+        self.daemon = Daemon()
+        self.uri = self.daemon.register(self)
+        self.nodes_ativos = []
     
     def pedir_acesso(tempo,uri):
         messagem = (tempo,uri)
@@ -48,22 +48,39 @@ class Node:
 
     @oneway
     def enviar_heartbeat():
-        hello = args    
-        return
+        print("Heartbeat enviado")
+        return True
+        
+    def gerencia_heartbeat(self):
+        
+        time.sleep(2)
+
+        for e in self.nodes_ativos:
+            try:
+                a = e.proxy(e.uri)
+                a.enviar_heartbeat()
+            except:
+                self.nodes_ativos.remove(e)
     
+    def gerenciar_acesso(self):
+        return "hello"
+
     def run(self):
-        try:
-            while True:
-                self.enviar_heartbeat()
-        except:
-            print()
+        while True:
+            try:
+                self.gerencia_heartbeat()
+            except:
+                print("Erro ao rodar!")
 
+    
+ns = locate_ns()          
 n = Node(args)
-
-daemon = Daemon()             # make a Pyro daemon
-uri = daemon.register(Node)    # register the greeting maker as a Pyro object
-
-print("Ready. Object uri =", uri)       # print the uri so we can use it in the client later
-daemon.requestLoop()  
+ns.register(f"{n.nome}", n.uri) 
+n.nodes_ativos = ns.list()
 
 print(n.nome)
+print(f"Os nodes ativos {n.nodes_ativos}")
+n.run()
+n.daemon.requestLoop()  
+
+
