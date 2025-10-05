@@ -1,8 +1,11 @@
 # saved as greeting-client.py
 import Pyro5.api
 
-uri = input("What is the Pyro uri of the greeting object? ").strip()
 name = input("What is your name? ").strip()
 
-greeting_maker = Pyro5.api.Proxy(uri)     # get a Pyro proxy to the greeting object
-print(greeting_maker.get_fortune(name))   # call method normally
+ns = Pyro5.api.locate_ns()
+greeting_maker = ns.list()  # use name server object lookup uri shortcut]
+for e in greeting_maker:
+    if(e != "Pyro.NameServer"):
+        proxy = Pyro5.api.Proxy(greeting_maker[e])
+        print(proxy.get_name(name))
