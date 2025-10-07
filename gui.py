@@ -1,25 +1,20 @@
 import tkinter as tk
 from tkinter import ttk
 import threading
-from Pyro5.api import *
 import time
-from queue import Queue
 
 RELEASED = 0
 WANTED = 1
 HELD = 2
-
-MAX_ACCESS_TIME = 10  # Tempo máximo de acesso ao recurso em segundos
-
 class NodeGUI:
-    def __init__(self, root):
+    def __init__(self, root, node=None):
         self.root = root
         self.root.title("Sistema Distribuído - Nó Peer-to-Peer")
         self.root.geometry("600x500")
         self.root.configure(bg='#f0f0f0')
 
         # Variáveis
-        self.node = None
+        self.node = node
         self.running = False
 
         # Frames
@@ -58,6 +53,20 @@ class NodeGUI:
         self.log_text = tk.Text(self.frame_bottom, height=10, width=70, font=('Arial', 10))
         self.log_text.pack(padx=5, pady=5)
 
+        # Se um Node foi injetado, prender na GUI e iniciar polling
+        if self.node is not None:
+            try:
+                self.name_entry.insert(0, getattr(self.node, 'nome', ''))
+            except Exception:
+                pass
+            self.name_entry.config(state='disabled')
+            self.start_button.config(state='disabled')
+            self.request_button.config(state='normal')
+            self.running = True
+            # roda daemon em background
+            threading.Thread(target=self.run_daemon, daemon=True).start()
+            self.schedule_poll()
+
     def log(self, message):
         self.log_text.insert(tk.END, message + '\n')
         self.log_text.see(tk.END)
@@ -68,6 +77,8 @@ class NodeGUI:
             self.log("Erro: Nome do nó não pode ser vazio.")
             return
 
+        # Import tardio para evitar dependência circular
+        from node import Node
         self.node = Node(name)
         self.running = True
         self.status_label.config(text="Iniciado", fg='green')
@@ -78,12 +89,14 @@ class NodeGUI:
         # Iniciar thread para o daemon
         threading.Thread(target=self.run_daemon, daemon=True).start()
 
-        # Atualizar lista de nós
+        # Atualizar lista de nós e iniciar polling
         self.update_nodes_list()
+        self.schedule_poll()
 
     def run_daemon(self):
         try:
-            self.node.run()
+            if self.node:
+                self.node.run()
         except Exception as e:
             self.log(f"Erro no daemon: {e}")
 
@@ -106,87 +119,20 @@ class NodeGUI:
     def update_nodes_list(self):
         if self.node:
             self.nodes_listbox.delete(0, tk.END)
-            for node in self.node.nodes_ativos:
+            for node in getattr(self.node, 'nodes_ativos', []):
                 self.nodes_listbox.insert(tk.END, str(node))
 
-class Node(object):
-    def __init__(self, name):
-        self.nome = name
-        self.estado = RELEASED
-        self.daemon = Daemon()
-        self.uri = self.daemon.register(self)
-        self.nodes_ativos = []
-        self.fila_pedidos = Queue()
-        self.timer = None
-
-        ns = locate_ns()
-        ns.register(f"{self.nome}", self.uri)
-
-        lista = ns.list()
-        for e in lista:
-            if str(e) != "Pyro.NameServer" and str(e) != self.nome:
-                proxy_no_ativo = Proxy(lista[e])
-                self.nodes_ativos.append(proxy_no_ativo)
-
-    def pedir_acesso(self, tempo, uri):
-        self.estado = WANTED
-        mensagem = (tempo, uri)
-        count = 0
-
-        while count < len(self.nodes_ativos):
-            for e in self.nodes_ativos:
-                try:
-                    if e.ceder_acesso(mensagem):
-                        count += 1
-                except:
-                    pass
-
-        self.estado = HELD
-        self.timer = threading.Timer(MAX_ACCESS_TIME, self.liberar_acesso)
-        self.timer.start()
-
-    @expose
-    @oneway
-    def ceder_acesso(self, mensagem):
-        if self.estado == RELEASED:
-            return True
-        else:
-            self.fila_pedidos.put(mensagem)
-            return False
-
-    def liberar_acesso(self):
-        self.estado = RELEASED
-        self.timer = None
-
-    @expose
-    @oneway
-    def enviar_heartbeat(self):
-        return True
-
-    def gerencia_heartbeat(self):
-        time.sleep(2)
-        nodes_copia = self.nodes_ativos[:]
-        for e in nodes_copia:
-            try:
-                e.enviar_heartbeat()
-            except:
-                if e in self.nodes_ativos:
-                    self.nodes_ativos.remove(e)
-
-    def run(self):
-        heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
-        heartbeat_thread.start()
-        self.daemon.requestLoop()
-
-    def heartbeat_loop(self):
-        while True:
-            try:
-                self.gerencia_heartbeat()
-            except Exception as e:
-                pass
-            time.sleep(1)
+    def schedule_poll(self):
+        try:
+            self.update_status()
+            self.update_nodes_list()
+        except Exception:
+            pass
+        if self.running:
+            self.root.after(500, self.schedule_poll)
 
 if __name__ == "__main__":
+    # Standalone: GUI permite criar Node pelo botão
     root = tk.Tk()
     app = NodeGUI(root)
     root.mainloop()
