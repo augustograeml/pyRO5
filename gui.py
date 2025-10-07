@@ -6,10 +6,6 @@ import time
 RELEASED = 0
 WANTED = 1
 HELD = 2
-
-MAX_ACCESS_TIME = 5  # Tempo máximo de acesso ao recurso em segundos
-REQUEST_TIMEOUT = 2.0  # Tempo máximo para aguardar resposta de um nó
-
 class NodeGUI:
     def __init__(self, root, node=None):
         self.root = root
