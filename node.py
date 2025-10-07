@@ -50,6 +50,8 @@ class Node(object):
         self.ns = 0
         # callback de log (atribuído pela GUI)
         self._log_callback = None
+        # timestamp do último pedido próprio (Ricart-Agrawala)
+        self.tempo_pedido = None
 
     # --- Logging helpers ---
     def set_logger(self, callback):
@@ -86,8 +88,11 @@ class Node(object):
         Aguarda respostas de todos os nós ativos com timeout; remove nós inativos.
         Entra em HELD somente se todos os nós ativos concederem.
         """
+        # mantém o mesmo timestamp enquanto espera para evitar inversão
+        if self.tempo_pedido is None:
+            self.tempo_pedido = tempo
         self.estado = WANTED
-        mensagem = (tempo, uri)
+        mensagem = (self.tempo_pedido, uri)
 
         # Snapshot para não iterar sobre lista mutável enquanto removemos nós
         ativos_snapshot = list(self.nodes_ativos)
@@ -145,8 +150,8 @@ class Node(object):
             self.timer.start()
             return True
         else:
-            self._log_console(f"NÃO entrou na seção crítica (respostas positivas: {respostas_positivas}/{total_esperado}).")
-            self.estado = RELEASED
+            # Permanece em WANTED aguardando liberação/novas notificações
+            self._log_console(f"NÃO entrou na seção crítica (respostas positivas: {respostas_positivas}/{total_esperado}). Permanecendo em WANTED.")
             return False
     
     @expose
@@ -161,18 +166,42 @@ class Node(object):
             except Exception:
                 self._log_console("Concedendo acesso para pedido recebido.")
             return True
-        else:
+        elif self.estado == HELD:
+            # Não pode conceder agora, enfileira
             self.fila_pedidos.put(mensagem)
             try:
                 req_ts, req_uri = mensagem
-                self._log_console(f"Negando/deferindo acesso (estado={self.estado}). Pedido de {req_uri} enfileirado (ts={req_ts}).")
+                self._log_console(f"Deferindo (HELD). Pedido de {req_uri} enfileirado (ts={req_ts}).")
             except Exception:
-                self._log_console(f"Negando/deferindo acesso (estado={self.estado}). Pedido enfileirado.")
+                self._log_console("Deferindo (HELD). Pedido enfileirado.")
             return False
+        else:  # self.estado == WANTED
+            try:
+                req_ts, req_uri = mensagem
+            except Exception:
+                # sem info, seja conservador: deferir
+                self.fila_pedidos.put(mensagem)
+                self._log_console("Deferindo (WANTED, sem timestamp). Pedido enfileirado.")
+                return False
+
+            # Compara prioridade (Ricart-Agrawala): mais antigo tem prioridade; desempate por URI
+            my_ts = self.tempo_pedido if self.tempo_pedido is not None else float('inf')
+            my_id = str(self.uri)
+            other_id = str(req_uri)
+
+            concede = (req_ts < my_ts) or (req_ts == my_ts and other_id < my_id)
+            if concede:
+                self._log_console(f"Concedendo (WANTED) para {other_id} ts={req_ts} (meu ts={my_ts}).")
+                return True
+            else:
+                self.fila_pedidos.put(mensagem)
+                self._log_console(f"Deferindo (WANTED) para {other_id} ts={req_ts} (meu ts={my_ts}). Pedido enfileirado.")
+                return False
             
     def liberar_acesso(self):
         self._log(f"Liberando/Perdendo acesso ao recurso (timeout {MAX_ACCESS_TIME}s atingido).")
         self.estado = RELEASED
+        self.tempo_pedido = None
         # O estado agora é RELEASED, permitindo que outros nós adquiram acesso
         self.timer = None
         # Processa fila de pedidos: envia resposta deferida para todos em ordem de tempo
@@ -200,7 +229,7 @@ class Node(object):
             # Tenta novo pedido em background para não bloquear
             threading.Thread(
                 target=self.pedir_acesso,
-                args=(time.time(), self.uri),
+                args=(self.tempo_pedido if self.tempo_pedido is not None else time.time(), self.uri),
                 daemon=True
             ).start()
         return

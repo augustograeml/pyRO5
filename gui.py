@@ -125,6 +125,7 @@ class NodeGUI:
         if self.node:
             threading.Thread(target=self.node.pedir_acesso, args=(time.time(), self.node.uri), daemon=True).start()
             self.log("Pedido de acesso enviado.")
+            # Atualiza imediatamente para refletir WANTED e depois o polling mantém
             self.update_status()
 
     def update_status(self):
