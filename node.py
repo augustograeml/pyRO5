@@ -82,7 +82,7 @@ class Node(object):
                 self._hb_failures[key] = 0
                 # Timeout/erro: considera destino inativo e remove
                 key = str(getattr(proxy, "_pyroUri", "desconhecido"))
-                print(f"Timeout/erro aguardando resposta de {key}: {type(ex).__name__}: {ex}. Removendo nó.")
+                print(f"Timeout/erro aguardando resposta de Removendo nó.")
                 try:
                     proxy._pyroRelease()
                 except Exception:
@@ -90,7 +90,7 @@ class Node(object):
                 if key in self.nodes_ativos:
                     self.nodes_ativos.remove(key)
                 # Como este nó não responderá, ajuste total esperado
-                total_esperado -= 1
+                #total_esperado -= 1
             finally:
                 # Restaura timeout do proxy
                 try:
