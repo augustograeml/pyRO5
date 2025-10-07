@@ -43,6 +43,7 @@ class Node(object):
         self.timer = None
         # contador de falhas de heartbeat por nó (chaveada pela URI)
         self._hb_failures = {}
+        self.ns = 0
     
     def pedir_acesso(self,tempo,uri):
         #inicializando mensagem e contador de respostas positivas
@@ -88,7 +89,9 @@ class Node(object):
         print("Dormindo...")
 
         nodes_copia = list(self.nodes_ativos)
+        print("Iniciando gerenciamento de heartbeats...")
         for e in nodes_copia:
+            print(f"Enviando heartbeat para nó com URI: {getattr(e, '_pyroUri', 'desconhecido')}")
             try:
                 # Timeout curto para não travar
                 # Proxies do Pyro não são thread-safe: reclamar a posse neste thread
@@ -122,6 +125,9 @@ class Node(object):
     def run(self):
         heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
         heartbeat_thread.start()
+
+        novos_nos_thread = threading.Thread(target=self.cadastra_novos_nos,args=self.ns, daemon=True)
+        novos_nos_thread.start()
         
         self.daemon.requestLoop()
     
@@ -133,10 +139,26 @@ class Node(object):
                 print(f"Erro no heartbeat: {e}")
                 time.sleep(1) 
 
+    def cadastra_novos_nos(self,ns):
+        while True:
+            lista = ns.list()
+            for e in lista:
+                if str(e) != "Pyro.NameServer" and  e != self.nome:
+                    print(f"Cadastrando o proxy do nó {e} que tem uri {lista[e]}")
+                    proxy_no_ativo = Proxy(lista[e])
+                    # tenta bind imediato e configura timeout
+                    try:
+                        proxy_no_ativo._pyroBind()
+                        proxy_no_ativo._pyroTimeout = 2.0
+                    except Exception as ex:
+                        print(f"Falha ao conectar ao nó {e} ({lista[e]}): {type(ex).__name__}: {ex}")
+                        continue
+                    self.nodes_ativos.append(proxy_no_ativo)
+
     
 def ensure_nameserver(host: str = "127.0.0.1", port: int | None = 9090):
     try:
-        return locate_ns(host=host, port=port)
+        return locate_ns()
     except Exception as e:
         print(f"NameServer não encontrado em {host}:{port} ({type(e).__name__}: {e}). Tentando iniciar um local...")
         try:
@@ -151,23 +173,17 @@ def ensure_nameserver(host: str = "127.0.0.1", port: int | None = 9090):
 
 ns = ensure_nameserver(host="127.0.0.1", port=9090)
 n = Node(args)
-
+n.ns = ns
 ns.register(f"{n.nome}", n.uri) 
 
-lista = ns.list()
+# Adicionar logs detalhados para depuração
+print(f"Registrando nó {n.nome} com URI {n.uri}")
 
+# Verificar se todos os peers estão sendo adicionados corretamente
+print("Lista de nós registrados no NameServer:")
+lista = ns.list()
 for e in lista:
-    if str(e) != "Pyro.NameServer" and  e != n.nome:
-        print(f"Cadastrando o proxy do nó {e} que tem uri {lista[e]}")
-        proxy_no_ativo = Proxy(lista[e])
-        # tenta bind imediato e configura timeout
-        try:
-            proxy_no_ativo._pyroBind()
-            proxy_no_ativo._pyroTimeout = 2.0
-        except Exception as ex:
-            print(f"Falha ao conectar ao nó {e} ({lista[e]}): {type(ex).__name__}: {ex}")
-            continue
-        n.nodes_ativos.append(proxy_no_ativo)
+    print(f"Nó: {e}, URI: {lista[e]}")
 
 print(n.nome)
-n.run()  
+n.run()
