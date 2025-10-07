@@ -62,9 +62,10 @@ class Node(object):
         total_esperado = len(ativos_snapshot)
         respostas_positivas = 0
 
-        for proxy in ativos_snapshot:
+        for uri in ativos_snapshot:
             try:
-                # Proxies não são thread-safe: reclama ownership neste thread
+                # uri é uma string, cria novo proxy nesta thread
+                proxy = Proxy(uri)
                 try:
                     proxy._pyroClaimOwnership()
                 except Exception:
@@ -79,7 +80,6 @@ class Node(object):
                 # Sucesso: zera contador de falhas de heartbeat
                 key = str(getattr(proxy, "_pyroUri", "desconhecido"))
                 self._hb_failures[key] = 0
-            except Exception as ex:
                 # Timeout/erro: considera destino inativo e remove
                 key = str(getattr(proxy, "_pyroUri", "desconhecido"))
                 print(f"Timeout/erro aguardando resposta de {key}: {type(ex).__name__}: {ex}. Removendo nó.")
@@ -87,8 +87,8 @@ class Node(object):
                     proxy._pyroRelease()
                 except Exception:
                     pass
-                if proxy in self.nodes_ativos:
-                    self.nodes_ativos.remove(proxy)
+                if key in self.nodes_ativos:
+                    self.nodes_ativos.remove(key)
                 # Como este nó não responderá, ajuste total esperado
                 total_esperado -= 1
             finally:
@@ -177,6 +177,10 @@ class Node(object):
         try:
             proxy = Proxy(uri)
             try:
+                proxy._pyroClaimOwnership()
+            except Exception:
+                pass
+            try:
                 proxy._pyroBind()
             except Exception:
                 pass
@@ -184,17 +188,13 @@ class Node(object):
             proxy._pyroTimeout = REQUEST_TIMEOUT
             proxy.notificar_liberacao(self.nome, str(self.uri), tempo)
         except Exception as ex:
-            key = str(getattr(proxy, "_pyroUri", uri)) if 'proxy' in locals() else str(uri)
+            key = uri
             print(f"Falha ao notificar resposta deferida para {key}: {type(ex).__name__}: {ex}")
             # Se este nó estiver na lista de ativos, remove
             try:
-                for p in list(self.nodes_ativos):
-                    if str(getattr(p, "_pyroUri", "")) == key:
-                        try:
-                            p._pyroRelease()
-                        except Exception:
-                            pass
-                        self.nodes_ativos.remove(p)
+                for uri_ativo in list(self.nodes_ativos):
+                    if uri_ativo == key:
+                        self.nodes_ativos.remove(uri_ativo)
                         break
             except Exception:
                 pass
@@ -212,45 +212,44 @@ class Node(object):
 
         nodes_copia = list(self.nodes_ativos)
         print("Iniciando gerenciamento de heartbeats...")
-        for e in nodes_copia:
-            print(f"Enviando heartbeat para nó com URI: {getattr(e, '_pyroUri', 'desconhecido')}")
+        for uri in nodes_copia:
+            # uri é uma string, não um proxy
+            print(f"Enviando heartbeat para nó com URI: {uri}")
             try:
-                # Timeout curto para não travar
-                # Proxies do Pyro não são thread-safe: reclamar a posse neste thread
+                # Cria novo proxy na thread atual
+                p = Proxy(uri)
                 try:
-                    e._pyroClaimOwnership()
+                    p._pyroClaimOwnership()
                 except Exception:
                     # se não suportar (ou já for nosso), segue
                     pass
-                e._pyroTimeout = 2.0
-                e.enviar_heartbeat()
+                p._pyroTimeout = 2.0
+                p.enviar_heartbeat()
                 # sucesso: zera contador de falhas
-                key = str(getattr(e, "_pyroUri", "desconhecido"))
-                self._hb_failures[key] = 0
+                self._hb_failures[uri] = 0
             except Exception as ex:
-                key = str(getattr(e, "_pyroUri", "desconhecido"))
-                self._hb_failures[key] = self._hb_failures.get(key, 0) + 1
-                print(f"Nó não respondeu ao heartbeat ({key}) [falhas={self._hb_failures[key]}]: {type(ex).__name__}: {ex}")
+                self._hb_failures[uri] = self._hb_failures.get(uri, 0) + 1
+                print(f"Nó não respondeu ao heartbeat ({uri}) [falhas={self._hb_failures[uri]}]: {type(ex).__name__}: {ex}")
                 # remove após 3 falhas consecutivas
-                if self._hb_failures[key] >= 3 and e in self.nodes_ativos:
-                    try:
-                        e._pyroRelease()
-                    except Exception:
-                        pass
-                    self.nodes_ativos.remove(e)
-                    print(f"Removido nó inativo ({key}) após falhas consecutivas.")
+                if self._hb_failures[uri] >= 3 and uri in self.nodes_ativos:
+                    self.nodes_ativos.remove(uri)
+                    print(f"Removido nó inativo ({uri}) após falhas consecutivas.")
     
     def gerenciar_acesso(self):
         #while temporizador != tempo_limite:
         return 1
         
     def run(self):
+        # Pequeno delay para garantir que tudo está inicializado
+        time.sleep(1)
+        
         heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
         heartbeat_thread.start()
 
-        novos_nos_thread = threading.Thread(target=self.cadastra_novos_nos,args=self.ns, daemon=True)
+        novos_nos_thread = threading.Thread(target=self.cadastra_novos_nos, args=(self.ns,), daemon=True)
         novos_nos_thread.start()
         
+        print(f"Nó {self.nome} iniciado com {len(self.nodes_ativos)} peers conhecidos")
         self.daemon.requestLoop()
     
     def heartbeat_loop(self):
@@ -261,21 +260,39 @@ class Node(object):
                 print(f"Erro no heartbeat: {e}")
                 time.sleep(1) 
 
-    def cadastra_novos_nos(self,ns):
+    def cadastra_novos_nos(self, ns):
         while True:
-            lista = ns.list()
-            for e in lista:
-                if str(e) != "Pyro.NameServer" and  e != self.nome:
-                    print(f"Cadastrando o proxy do nó {e} que tem uri {lista[e]}")
-                    proxy_no_ativo = Proxy(lista[e])
-                    # tenta bind imediato e configura timeout
+            try:
+                # Cria um novo proxy para o NameServer nesta thread para evitar ownership issues
+                ns_uri = ns._pyroUri if hasattr(ns, '_pyroUri') else None
+                if ns_uri:
+                    local_ns = Proxy(ns_uri)
                     try:
-                        proxy_no_ativo._pyroBind()
-                        proxy_no_ativo._pyroTimeout = 2.0
-                    except Exception as ex:
-                        print(f"Falha ao conectar ao nó {e} ({lista[e]}): {type(ex).__name__}: {ex}")
-                        continue
-                    self.nodes_ativos.append(proxy_no_ativo)
+                        local_ns._pyroClaimOwnership()
+                    except Exception:
+                        pass
+                    lista = local_ns.list()
+                else:
+                    # Fallback: tentar usar o NameServer original
+                    try:
+                        ns._pyroClaimOwnership()
+                    except Exception:
+                        pass
+                    lista = ns.list()
+                    
+                for e in lista:
+                    if str(e) != "Pyro.NameServer" and e != self.nome:
+                        # Verifica se já temos este nó na lista
+                        uri_str = str(lista[e])
+                        if uri_str not in self.nodes_ativos:
+                            print(f"Descobrindo novo nó {e} com URI {lista[e]}")
+                            self.nodes_ativos.append(uri_str)
+                            print(f"Nó {e} adicionado à lista de ativos. Total: {len(self.nodes_ativos)}")
+                
+                time.sleep(3)  # Verifica novos nós a cada 3 segundos
+            except Exception as ex:
+                print(f"Erro na descoberta de nós: {type(ex).__name__}: {ex}")
+                time.sleep(5)  # Espera mais tempo em caso de erro
 
     
 def ensure_nameserver(host: str = "127.0.0.1", port: int | None = 9090):
@@ -307,14 +324,10 @@ if __name__ == "__main__":
     for e in lista:
         if str(e) != "Pyro.NameServer" and e != n.nome:
             print(f"Cadastrando o proxy do nó {e} que tem uri {lista[e]}")
-            proxy_no_ativo = Proxy(lista[e])
-            try:
-                proxy_no_ativo._pyroBind()
-                proxy_no_ativo._pyroTimeout = 2.0
-            except Exception as ex:
-                print(f"Falha ao conectar ao nó {e} ({lista[e]}): {type(ex).__name__}: {ex}")
-                continue
-            n.nodes_ativos.append(proxy_no_ativo)
+            uri_no_ativo = lista[e]
+            n.nodes_ativos.append(uri_no_ativo)
+            
+    n.ns = ns
 
     # Abre GUI e injeta Node
     try:
