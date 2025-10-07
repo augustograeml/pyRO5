@@ -144,21 +144,12 @@ class Node(object):
     @expose
     @oneway
     def notificar_liberacao(self, remetente_nome: str, remetente_uri: str, tempo_pedido: float):
-        """Notificação recebida de que um nó liberou e está concedendo a resposta deferida.
-        Estratégia simples: se não estamos em HELD, tentamos pedir acesso novamente.
-        """
         print(f"{self.nome}: notificação de liberação recebida de {remetente_nome}. Reavaliando pedido...")
         if self.estado != HELD:
-            # Tenta novo pedido em background para não bloquear
-            threading.Thread(
-                target=self.pedir_acesso,
-                args=(time.time(), self.uri),
-                daemon=True
-            ).start()
+            threading.Thread(target=self.pedir_acesso,args=(time.time(), self.uri),daemon=True).start()
         return
 
     def _drenar_fila_pedidos(self):
-        """Retorna uma lista de pedidos (tempo, uri) ordenada por tempo (mais antigo primeiro)."""
         itens = []
         try:
             while True:
@@ -173,7 +164,6 @@ class Node(object):
         return itens
 
     def _notificar_resposta_deferida(self, tempo: float, uri: str):
-        """Envia uma notificação de liberação ao solicitante original (uri)."""
         try:
             proxy = Proxy(uri)
             try:
@@ -234,10 +224,6 @@ class Node(object):
                 if self._hb_failures[uri] >= 3 and uri in self.nodes_ativos:
                     self.nodes_ativos.remove(uri)
                     print(f"Removido nó inativo ({uri}) após falhas consecutivas.")
-    
-    def gerenciar_acesso(self):
-        #while temporizador != tempo_limite:
-        return 1
         
     def run(self):
         # Pequeno delay para garantir que tudo está inicializado
@@ -294,25 +280,9 @@ class Node(object):
                 print(f"Erro na descoberta de nós: {type(ex).__name__}: {ex}")
                 time.sleep(5)  # Espera mais tempo em caso de erro
 
-    
-def ensure_nameserver(host: str = "127.0.0.1", port: int | None = 9090):
-    try:
-        return locate_ns()
-    except Exception as e:
-        print(f"NameServer não encontrado em {host}:{port} ({type(e).__name__}: {e}). Tentando iniciar um local...")
-        try:
-            ns_uri, ns_daemon, _ = start_ns(host=host, port=port, enableBroadcast=False)
-            threading.Thread(target=ns_daemon.requestLoop, daemon=True).start()
-            print(f"NameServer iniciado em {host}:{port} -> {ns_uri}")
-            return locate_ns(host=host, port=port)
-        except Exception as e2:
-            print(f"Falha ao iniciar NameServer local: {type(e2).__name__}: {e2}")
-            raise
-
-
 if __name__ == "__main__":
     # Inicializa NameServer (ou conecta ao existente)
-    ns = ensure_nameserver(host="127.0.0.1", port=9090)
+    ns = locate_ns()
     # Cria nó com nome vindo da CLI
     n = Node(args)
 
