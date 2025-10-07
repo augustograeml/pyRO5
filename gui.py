@@ -63,13 +63,28 @@ class NodeGUI:
             self.start_button.config(state='disabled')
             self.request_button.config(state='normal')
             self.running = True
+            # conecta logger do Node à GUI (thread-safe via after)
+            try:
+                self.node.set_logger(self.enqueue_log)
+            except Exception:
+                pass
             # roda daemon em background
             threading.Thread(target=self.run_daemon, daemon=True).start()
             self.schedule_poll()
 
+        # handler para fechar janela com limpeza
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
     def log(self, message):
         self.log_text.insert(tk.END, message + '\n')
         self.log_text.see(tk.END)
+
+    def enqueue_log(self, message: str):
+        # garante atualização no thread da GUI
+        try:
+            self.root.after(0, lambda: self.log(message))
+        except Exception:
+            pass
 
     def start_node(self):
         name = self.name_entry.get().strip()
@@ -85,6 +100,12 @@ class NodeGUI:
         self.request_button.config(state='normal')
         self.start_button.config(state='disabled')
         self.log(f"Nó {name} iniciado.")
+
+        # Conecta logger
+        try:
+            self.node.set_logger(self.enqueue_log)
+        except Exception:
+            pass
 
         # Iniciar thread para o daemon
         threading.Thread(target=self.run_daemon, daemon=True).start()
@@ -130,6 +151,27 @@ class NodeGUI:
             pass
         if self.running:
             self.root.after(500, self.schedule_poll)
+
+    def on_close(self):
+        # desinscrever do NameServer e encerrar daemon
+        try:
+            self.running = False
+            if self.node:
+                try:
+                    # se ainda com acesso, libera explicitamente antes de sair
+                    if getattr(self.node, 'estado', RELEASED) == HELD:
+                        self.node.liberar_acesso()
+                except Exception:
+                    pass
+                try:
+                    self.node.unregister()
+                except Exception:
+                    pass
+        finally:
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     # Standalone: GUI permite criar Node pelo botão
