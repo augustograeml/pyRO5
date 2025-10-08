@@ -1,11 +1,13 @@
 import argparse
 import textwrap
 import threading
-from Pyro5.api import *
+from Pyro5.api import expose,Proxy,oneway, locate_ns, Daemon
 import time
 from queue import Queue
 import json
 from Pyro5.nameserver import start_ns
+import tkinter as tk
+from gui import NodeGUI
 
 RELEASED = 0
 WANTED = 1 
@@ -14,6 +16,7 @@ HELD = 2
 MAX_ACCESS_TIME = 10
 REQUEST_TIMEOUT = 2.0
 RESPONSE_TIMEOUT = 2.0
+MAX_ERROR = 3
 
 
 parser = argparse.ArgumentParser(
@@ -202,7 +205,6 @@ class Node(object):
         for uri in nodes_copia:
             self._log_console(f"Enviando heartbeat para nó com URI: {uri}")
             try:
-                # Cria novo proxy na thread atual
                 p = Proxy(uri)
                 p._pyroClaimOwnership()
 
@@ -213,7 +215,7 @@ class Node(object):
                 self.num_falhas_heartbeat[uri] = self.num_falhas_heartbeat.get(uri, 0) + 1
                 self._log_console(f"Nó não respondeu ao heartbeat ({uri}) [falhas={self.num_falhas_heartbeat[uri]}]: {type(ex).__name__}: {ex}")
                 # remove após 3 falhas consecutivas
-                if self.num_falhas_heartbeat[uri] >= 3 and uri in self.nodes_ativos:
+                if self.num_falhas_heartbeat[uri] >= MAX_ERROR and uri in self.nodes_ativos:
                     self.nodes_ativos.remove(uri)
                     self._log_console(f"Removido nó inativo ({uri}) após falhas consecutivas. (saiu dos nós inscritos)")
         
@@ -259,21 +261,11 @@ class Node(object):
             time.sleep(3)
 
 if __name__ == "__main__":
-    #Tratamento do nameserver
     ns = locate_ns()
     n = Node(args)
     ns.register(f"{n.nome}", n.uri)
     n.ns = ns
 
-    # Abre GUI e injeta Node
-    try:
-        import tkinter as tk
-        from gui import NodeGUI
-        root = tk.Tk()
-        # Passa o próprio Node para a GUI
-        app = NodeGUI(root, node=n)
-        root.mainloop()
-    except Exception as ex:
-        print(f"Falha ao iniciar GUI: {type(ex).__name__}: {ex}. Executando nó sem interface gráfica...")
-        print(n.nome)
-        n.run()
+    root = tk.Tk()
+    app = NodeGUI(root, node=n)
+    root.mainloop()
