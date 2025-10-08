@@ -57,27 +57,18 @@ class NodeGUI:
         self.log_text = tk.Text(self.frame_bottom, height=10, width=70, font=('Arial', 10))
         self.log_text.pack(padx=5, pady=5)
 
-        # Se um Node foi injetado, prender na GUI e iniciar polling
         if self.node is not None:
-            try:
-                self.name_entry.insert(0, getattr(self.node, 'nome', ''))
-            except Exception:
-                pass
+            self.name_entry.insert(0, getattr(self.node, 'nome', ''))
             self.name_entry.config(state='disabled')
             self.start_button.config(state='disabled')
             self.request_button.config(state='normal')
             self.release_button.config(state='normal')
             self.running = True
-            # conecta logger do Node à GUI (thread-safe via after)
-            try:
-                self.node.set_logger(self.enqueue_log)
-            except Exception:
-                pass
-            # roda daemon em background
-            threading.Thread(target=self.run_daemon, daemon=True).start()
+            self.node.set_logger(self.enqueue_log)
+            
+            threading.Thread(target=self.node.run, daemon=True).start()
             self.schedule_poll()
 
-        # handler para fechar janela com limpeza
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def log(self, message):
@@ -85,20 +76,15 @@ class NodeGUI:
         self.log_text.see(tk.END)
 
     def enqueue_log(self, message: str):
-        # garante atualização no thread da GUI
-        try:
-            self.root.after(0, lambda: self.log(message))
-        except Exception:
-            pass
+        self.root.after(0, lambda: self.log(message))
 
     def start_node(self):
+        from node import Node
         name = self.name_entry.get().strip()
         if not name:
             self.log("Erro: Nome do nó não pode ser vazio.")
             return
-
-        # Import tardio para evitar dependência circular
-        from node import Node
+        
         self.node = Node(name)
         self.running = True
         self.status_label.config(text="Iniciado", fg='green')
@@ -106,32 +92,17 @@ class NodeGUI:
         self.name_entry.config(state='disabled')
         self.start_button.config(state='disabled')
         self.log(f"Nó {name} iniciado.")
+        
+        self.node.set_logger(self.enqueue_log)
+        threading.Thread(target=self.node.run, daemon=True).start()
 
-        # Conecta logger
-        try:
-            self.node.set_logger(self.enqueue_log)
-        except Exception:
-            pass
-
-        # Iniciar thread para o daemon
-        threading.Thread(target=self.run_daemon, daemon=True).start()
-
-        # Atualizar lista de nós e iniciar polling
         self.update_nodes_list()
         self.schedule_poll()
-
-    def run_daemon(self):
-        try:
-            if self.node:
-                self.node.run()
-        except Exception as e:
-            self.log(f"Erro no daemon: {e}")
 
     def request_access(self):
         if self.node:
             threading.Thread(target=self.node.pedir_acesso, args=(time.time(), self.node.uri), daemon=True).start()
             self.log("Pedido de acesso enviado.")
-            # Atualiza imediatamente para refletir WANTED e depois o polling mantém
             self.update_status()
 
     def release_access(self):
@@ -157,37 +128,22 @@ class NodeGUI:
                 self.nodes_listbox.insert(tk.END, str(node))
 
     def schedule_poll(self):
-        try:
-            self.update_status()
-            self.update_nodes_list()
-        except Exception:
-            pass
+        self.update_status()
+        self.update_nodes_list()
         if self.running:
             self.root.after(500, self.schedule_poll)
 
     def on_close(self):
-        # desinscrever do NameServer e encerrar daemon
         try:
             self.running = False
             if self.node:
-                try:
-                    # se ainda com acesso, libera explicitamente antes de sair
-                    if getattr(self.node, 'estado', RELEASED) == HELD:
-                        self.node.liberar_acesso()
-                except Exception:
-                    pass
-                try:
+                if getattr(self.node, 'estado', RELEASED) == HELD:
+                    self.node.liberar_acesso()
                     self.node.unregister()
-                except Exception:
-                    pass
         finally:
-            try:
-                self.root.destroy()
-            except Exception:
-                pass
+            self.root.destroy()
 
 if __name__ == "__main__":
-    # Standalone: GUI permite criar Node pelo botão
     root = tk.Tk()
     app = NodeGUI(root)
     root.mainloop()
