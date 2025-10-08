@@ -11,8 +11,9 @@ RELEASED = 0
 WANTED = 1 
 HELD = 2
 
-MAX_ACCESS_TIME = 10  # Tempo máximo de acesso ao recurso em segundos
-REQUEST_TIMEOUT = 2.0  # Tempo máximo para aguardar resposta de um nó
+MAX_ACCESS_TIME = 10
+REQUEST_TIMEOUT = 2.0
+RESPONSE_TIMEOUT = 2.0
 
 
 parser = argparse.ArgumentParser(
@@ -26,11 +27,8 @@ parser.add_argument('-n','--name',help='define o nome do peer')
 
 args = parser.parse_args()
 
-
-
 if args.name:
     print(f"Meu nome é {args.name}")
-
 
 class Node(object):
     def __init__(self, name_or_args):
@@ -39,152 +37,95 @@ class Node(object):
         else:
             self.nome = name_or_args.name
         self.estado = RELEASED
-        # Força IPv4 para evitar problemas de localhost/IPv6
-        self.daemon = Daemon(host="127.0.0.1")
+        self.daemon = Daemon()
         self.uri = self.daemon.register(self)
         self.nodes_ativos = []
         self.fila_pedidos = Queue()
         self.timer = None
-        # contador de falhas de heartbeat por nó (chaveada pela URI)
-        self._hb_failures = {}
+        self.num_falhas_heartbeat = {}
         self.ns = 0
-        # callback de log (atribuído pela GUI)
         self._log_callback = None
-        # timestamp do último pedido próprio (Ricart-Agrawala)
         self.tempo_pedido = None
 
-    # --- Logging helpers ---
     def set_logger(self, callback):
-        """Registra um callback de log (string -> None). Pode ser chamado pela GUI.
-        O callback pode ser chamado de threads diferentes; a GUI deve agendar via after().
-        """
         self._log_callback = callback
 
     def _log(self, msg: str):
         ts = time.strftime("%H:%M:%S")
         line = f"[{ts}] {self.nome}: {msg}"
-        try:
-            print(line)
-        except Exception:
-            pass
+        print(line)
         if callable(self._log_callback):
-            try:
-                self._log_callback(line)
-            except Exception:
-                # evita quebrar o nó por falha no log
-                pass
-
+            self._log_callback(line)
+ 
     def _log_console(self, msg: str):
-        """Loga apenas no terminal/console, não envia para GUI."""
         ts = time.strftime("%H:%M:%S")
         line = f"[{ts}] {self.nome}: {msg}"
-        try:
-            print(line)
-        except Exception:
-            pass
+        print(line)
     
     def pedir_acesso(self,tempo,uri):
-        """Pede acesso à seção crítica.
-        Aguarda respostas de todos os nós ativos com timeout; remove nós inativos.
-        Entra em HELD somente se todos os nós ativos concederem.
-        """
-        # mantém o mesmo timestamp enquanto espera para evitar inversão
         if self.tempo_pedido is None:
             self.tempo_pedido = tempo
         self.estado = WANTED
         mensagem = (self.tempo_pedido, uri)
 
-        # Snapshot para não iterar sobre lista mutável enquanto removemos nós
-        ativos_snapshot = list(self.nodes_ativos)
-        total_esperado = 0  # apenas quem respondeu será contabilizado
+        ativos = list(self.nodes_ativos)
+        total_esperado = 0
         respostas_positivas = 0
 
-        for uri in ativos_snapshot:
+        for uri in ativos:
             proxy = None
             timeout_original = None
             try:
-                # uri é uma string, cria novo proxy nesta thread
                 proxy = Proxy(uri)
-                try:
-                    proxy._pyroClaimOwnership()
-                except Exception:
-                    pass
-                # Configura timeout da chamada de pedido
-                timeout_original = getattr(proxy, "_pyroTimeout", None)
+                proxy._pyroClaimOwnership()
+
+                timeout_original = proxy._pyroTimeout
                 proxy._pyroTimeout = REQUEST_TIMEOUT
 
                 concedeu = bool(proxy.ceder_acesso(mensagem))
                 total_esperado += 1
                 if concedeu:
                     respostas_positivas += 1
-                # Sucesso: zera contador de falhas de heartbeat
-                key = str(getattr(proxy, "_pyroUri", uri))
-                self._hb_failures[key] = 0
+
+                key = proxy._pyroUri
+                self.num_falhas_heartbeat[key] = 0
             except Exception as ex:
                 key = uri
                 self._log_console(f"Timeout/erro aguardando resposta de {key}. Removendo nó. Motivo: {type(ex).__name__}: {ex}")
-                try:
-                    if proxy is not None:
-                        proxy._pyroRelease()
-                except Exception:
-                    pass
+                if proxy is not None:
+                    proxy._pyroRelease()
                 if key in self.nodes_ativos:
-                    try:
-                        self.nodes_ativos.remove(key)
-                    except Exception:
-                        pass
-                # nó inacessível não conta no esperado
+                    self.nodes_ativos.remove(key)
+                    
             finally:
-                # Restaura timeout do proxy
-                try:
-                    if proxy is not None and timeout_original is not None:
-                        proxy._pyroTimeout = timeout_original
-                except Exception:
-                    pass
+                if proxy is not None and timeout_original is not None:
+                    proxy._pyroTimeout = timeout_original
 
         if respostas_positivas == total_esperado:
             self.estado = HELD
             self._log(f"ENTROU na seção crítica (todas as respostas positivas: {respostas_positivas}/{total_esperado}). Agora COM ACESSO ao recurso.")
-            # Iniciar timer para liberar automaticamente após MAX_ACCESS_TIME
             self.timer = threading.Timer(MAX_ACCESS_TIME, self.liberar_acesso)
             self.timer.start()
             return True
         else:
-            # Permanece em WANTED aguardando liberação/novas notificações
             self._log_console(f"NÃO entrou na seção crítica (respostas positivas: {respostas_positivas}/{total_esperado}). Permanecendo em WANTED.")
             return False
     
     @expose
     def ceder_acesso(self,mensagem):
-        """Sempre responde ao pedido: True para conceder, False para negar.
-        Se negar, enfileira o pedido para referência futura.
-        """
         if self.estado == RELEASED:
-            try:
-                req_ts, req_uri = mensagem
-                self._log_console(f"Concedendo acesso para pedido de {req_uri} (ts={req_ts}).")
-            except Exception:
-                self._log_console("Concedendo acesso para pedido recebido.")
+            req_ts, req_uri = mensagem
+            self._log_console(f"Concedendo acesso para pedido de {req_uri} (ts={req_ts}).")
             return True
         elif self.estado == HELD:
             # Não pode conceder agora, enfileira
             self.fila_pedidos.put(mensagem)
-            try:
-                req_ts, req_uri = mensagem
-                self._log_console(f"Deferindo (HELD). Pedido de {req_uri} enfileirado (ts={req_ts}).")
-            except Exception:
-                self._log_console("Deferindo (HELD). Pedido enfileirado.")
+            req_ts, req_uri = mensagem
+            self._log_console(f"Deferindo (HELD). Pedido de {req_uri} enfileirado (ts={req_ts}).")
             return False
-        else:  # self.estado == WANTED
-            try:
-                req_ts, req_uri = mensagem
-            except Exception:
-                # sem info, seja conservador: deferir
-                self.fila_pedidos.put(mensagem)
-                self._log_console("Deferindo (WANTED, sem timestamp). Pedido enfileirado.")
-                return False
-
-            # Compara prioridade (Ricart-Agrawala): mais antigo tem prioridade; desempate por URI
+        else:
+            req_ts, req_uri = mensagem
+            
             my_ts = self.tempo_pedido if self.tempo_pedido is not None else float('inf')
             my_id = str(self.uri)
             other_id = str(req_uri)
@@ -202,10 +143,8 @@ class Node(object):
         self._log(f"Liberando/Perdendo acesso ao recurso (timeout {MAX_ACCESS_TIME}s atingido).")
         self.estado = RELEASED
         self.tempo_pedido = None
-        # O estado agora é RELEASED, permitindo que outros nós adquiram acesso
         self.timer = None
-        # Processa fila de pedidos: envia resposta deferida para todos em ordem de tempo
-        pedidos = self._drenar_fila_pedidos()
+        pedidos = self.ordena_fila_pedidos()
         if pedidos:
             self._log_console(f"Processando {len(pedidos)} pedido(s) enfileirado(s) ao liberar acesso.")
         for tempo, uri in pedidos:
@@ -214,16 +153,12 @@ class Node(object):
     @expose
     @oneway
     def enviar_heartbeat(self):
-        # oneway: não retorna valor; apenas registra que recebeu
         self._log_console("Heartbeat recebido.")
         return
 
     @expose
     @oneway
     def notificar_liberacao(self, remetente_nome: str, remetente_uri: str, tempo_pedido: float):
-        """Notificação recebida de que um nó liberou e está concedendo a resposta deferida.
-        Estratégia simples: se não estamos em HELD, tentamos pedir acesso novamente.
-        """
         self._log_console(f"Notificação de liberação recebida de {remetente_nome}. Reavaliando pedido...")
         if self.estado != HELD:
             # Tenta novo pedido em background para não bloquear
@@ -234,131 +169,70 @@ class Node(object):
             ).start()
         return
 
-    def _drenar_fila_pedidos(self):
-        """Retorna uma lista de pedidos (tempo, uri) ordenada por tempo (mais antigo primeiro)."""
+    def ordena_fila_pedidos(self):
         itens = []
-        try:
-            while True:
-                itens.append(self.fila_pedidos.get_nowait())
-        except Exception:
-            pass
-        # Ordena por timestamp
-        try:
-            itens.sort(key=lambda x: x[0])
-        except Exception:
-            pass
+        for e in range(0,self.fila_pedidos.qsize()):
+            itens.append(self.fila_pedidos.get_nowait())
+        itens.sort(key=lambda x: x[0]) #ordena pelo tempo [(tempo, uri)]
         return itens
 
     def _notificar_resposta_deferida(self, tempo: float, uri: str):
-        """Envia uma notificação de liberação ao solicitante original (uri)."""
         try:
             proxy = Proxy(uri)
-            try:
-                proxy._pyroClaimOwnership()
-            except Exception:
-                pass
-            try:
-                proxy._pyroBind()
-            except Exception:
-                pass
-            timeout_original = getattr(proxy, "_pyroTimeout", None)
+            proxy._pyroClaimOwnership()
+            proxy._pyroBind()
+          
+            timeout_original = proxy._pyroTimeout
             proxy._pyroTimeout = REQUEST_TIMEOUT
             proxy.notificar_liberacao(self.nome, str(self.uri), tempo)
         except Exception as ex:
             key = uri
             self._log_console(f"Falha ao notificar resposta deferida para {key}: {type(ex).__name__}: {ex}")
-            # Se este nó estiver na lista de ativos, remove
-            try:
-                for uri_ativo in list(self.nodes_ativos):
-                    if uri_ativo == key:
-                        self.nodes_ativos.remove(uri_ativo)
-                        break
-            except Exception:
-                pass
-        finally:
-            try:
-                if 'proxy' in locals() and timeout_original is not None:
-                    proxy._pyroTimeout = timeout_original
-            except Exception:
-                pass
+            for uri_ativo in list(self.nodes_ativos):
+                if uri_ativo == key:
+                    self.nodes_ativos.remove(uri_ativo)
+                    break
+            
         
     def gerencia_heartbeat(self):
-        
         time.sleep(2)
         self._log_console("Dormindo...")
 
         nodes_copia = list(self.nodes_ativos)
-        self._log_console("Iniciando gerenciamento de heartbeats...")
         for uri in nodes_copia:
-            # uri é uma string, não um proxy
             self._log_console(f"Enviando heartbeat para nó com URI: {uri}")
             try:
                 # Cria novo proxy na thread atual
                 p = Proxy(uri)
-                try:
-                    p._pyroClaimOwnership()
-                except Exception:
-                    # se não suportar (ou já for nosso), segue
-                    pass
-                p._pyroTimeout = 2.0
+                p._pyroClaimOwnership()
+
+                p._pyroTimeout = RESPONSE_TIMEOUT
                 p.enviar_heartbeat()
-                # sucesso: zera contador de falhas
-                self._hb_failures[uri] = 0
+                self.num_falhas_heartbeat[uri] = 0
             except Exception as ex:
-                self._hb_failures[uri] = self._hb_failures.get(uri, 0) + 1
-                self._log_console(f"Nó não respondeu ao heartbeat ({uri}) [falhas={self._hb_failures[uri]}]: {type(ex).__name__}: {ex}")
+                self.num_falhas_heartbeat[uri] = self.num_falhas_heartbeat.get(uri, 0) + 1
+                self._log_console(f"Nó não respondeu ao heartbeat ({uri}) [falhas={self.num_falhas_heartbeat[uri]}]: {type(ex).__name__}: {ex}")
                 # remove após 3 falhas consecutivas
-                if self._hb_failures[uri] >= 3 and uri in self.nodes_ativos:
+                if self.num_falhas_heartbeat[uri] >= 3 and uri in self.nodes_ativos:
                     self.nodes_ativos.remove(uri)
                     self._log_console(f"Removido nó inativo ({uri}) após falhas consecutivas. (saiu dos nós inscritos)")
-    
-    def gerenciar_acesso(self):
-        #while temporizador != tempo_limite:
-        return 1
         
     def run(self):
-        # Pequeno delay para garantir que tudo está inicializado
-        time.sleep(1)
-        
         heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
         heartbeat_thread.start()
 
         novos_nos_thread = threading.Thread(target=self.cadastra_novos_nos, args=(self.ns,), daemon=True)
         novos_nos_thread.start()
         
-        self._log_console(f"Iniciado com {len(self.nodes_ativos)} peer(s) conhecido(s)")
         self.daemon.requestLoop()
 
     def unregister(self):
-        """Desinscreve do NameServer e encerra o daemon, emitindo logs detalhados."""
-        try:
-            if self.ns:
-                try:
-                    # Tenta remover pelo próprio objeto ns (não proxy) primeiro
-                    self.ns.remove(self.nome)
-                    self._log("Removido do NameServer (saiu dos nós inscritos no Pyro).")
-                except Exception:
-                    # Se for um proxy, garanta bind e tente novamente
-                    try:
-                        if hasattr(self.ns, '_pyroUri'):
-                            p = Proxy(self.ns._pyroUri)
-                            p._pyroTimeout = 2.0
-                            p.remove(self.nome)
-                            self._log("Removido do NameServer via proxy.")
-                    except Exception as ex:
-                        self._log(f"Falha ao remover do NameServer: {type(ex).__name__}: {ex}")
-        except Exception as ex:
-            self._log(f"Erro durante unregister: {type(ex).__name__}: {ex}")
-        finally:
-            try:
-                # Encerra o loop do daemon
-                self.daemon.shutdown()
-            except Exception:
-                pass
-            try:
-                self.daemon.close()
-            except Exception:
-                pass
+        if self.ns:
+            self.ns.remove(self.nome)
+            self._log("Removido do NameServer (saiu dos nós inscritos no Pyro).")
+    
+            self.daemon.shutdown()
+            self.daemon.close()
             self._log("Daemon encerrado.")
     
     def heartbeat_loop(self):
@@ -371,71 +245,24 @@ class Node(object):
 
     def cadastra_novos_nos(self, ns):
         while True:
-            try:
-                # Cria um novo proxy para o NameServer nesta thread para evitar ownership issues
-                ns_uri = ns._pyroUri if hasattr(ns, '_pyroUri') else None
-                if ns_uri:
-                    local_ns = Proxy(ns_uri)
-                    try:
-                        local_ns._pyroClaimOwnership()
-                    except Exception:
-                        pass
-                    lista = local_ns.list()
-                else:
-                    # Fallback: tentar usar o NameServer original
-                    try:
-                        ns._pyroClaimOwnership()
-                    except Exception:
-                        pass
-                    lista = ns.list()
-                    
-                for e in lista:
-                    if str(e) != "Pyro.NameServer" and e != self.nome:
-                        # Verifica se já temos este nó na lista
-                        uri_str = str(lista[e])
-                        if uri_str not in self.nodes_ativos:
-                            self._log_console(f"Descobrindo novo nó {e} com URI {lista[e]}")
-                            self.nodes_ativos.append(uri_str)
-                            self._log_console(f"Nó {e} adicionado à lista de ativos. Total: {len(self.nodes_ativos)}")
+            ns._pyroClaimOwnership()
+            lista = ns.list()
                 
-                time.sleep(3)  # Verifica novos nós a cada 3 segundos
-            except Exception as ex:
-                self._log_console(f"Erro na descoberta de nós: {type(ex).__name__}: {ex}")
-                time.sleep(5)  # Espera mais tempo em caso de erro
-
-    
-def ensure_nameserver(host: str = "127.0.0.1", port: int | None = 9090):
-    try:
-        return locate_ns()
-    except Exception as e:
-        print(f"NameServer não encontrado em {host}:{port} ({type(e).__name__}: {e}). Tentando iniciar um local...")
-        try:
-            ns_uri, ns_daemon, _ = start_ns(host=host, port=port, enableBroadcast=False)
-            threading.Thread(target=ns_daemon.requestLoop, daemon=True).start()
-            print(f"NameServer iniciado em {host}:{port} -> {ns_uri}")
-            return locate_ns(host=host, port=port)
-        except Exception as e2:
-            print(f"Falha ao iniciar NameServer local: {type(e2).__name__}: {e2}")
-            raise
-
+            for e in lista:
+                if str(e) != "Pyro.NameServer" and e != self.nome:
+                    uri_str = str(lista[e])
+                    if uri_str not in self.nodes_ativos:
+                        self._log_console(f"Descobrindo novo nó {e} com URI {lista[e]}")
+                        self.nodes_ativos.append(uri_str)
+                        self._log_console(f"Nó {e} adicionado à lista de ativos. Total: {len(self.nodes_ativos)}")
+            
+            time.sleep(3)
 
 if __name__ == "__main__":
-    # Inicializa NameServer (ou conecta ao existente)
-    ns = ensure_nameserver(host="127.0.0.1", port=9090)
-    # Cria nó com nome vindo da CLI
+    #Tratamento do nameserver
+    ns = locate_ns()
     n = Node(args)
-
-    # Registra no NameServer
     ns.register(f"{n.nome}", n.uri)
-
-    # Descobre e conecta aos demais nós já registrados
-    lista = ns.list()
-    for e in lista:
-        if str(e) != "Pyro.NameServer" and e != n.nome:
-            print(f"Cadastrando o proxy do nó {e} que tem uri {lista[e]}")
-            uri_no_ativo = lista[e]
-            n.nodes_ativos.append(uri_no_ativo)
-            
     n.ns = ns
 
     # Abre GUI e injeta Node

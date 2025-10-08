@@ -41,7 +41,11 @@ class NodeGUI:
 
         # Pedir acesso
         self.request_button = tk.Button(self.frame_middle, text="Pedir Acesso", command=self.request_access, bg='#2196F3', fg='white', font=('Arial', 10), state='disabled')
-        self.request_button.grid(row=0, column=2, padx=5)
+        self.request_button.grid(row=0, column=3, padx=5)
+
+         # Liberar acesso
+        self.release_button = tk.Button(self.frame_middle, text="Liberar Acesso", command=self.release_access, bg="#F10B0B", fg='white', font=('Arial', 10), state='disabled')
+        self.release_button.grid(row=1, column=3, padx=5)
 
         # Lista de nós ativos
         tk.Label(self.frame_middle, text="Nós Ativos:", bg='#f0f0f0', font=('Arial', 12)).grid(row=1, column=0, padx=5, pady=10)
@@ -62,6 +66,7 @@ class NodeGUI:
             self.name_entry.config(state='disabled')
             self.start_button.config(state='disabled')
             self.request_button.config(state='normal')
+            self.release_button.config(state='normal')
             self.running = True
             # conecta logger do Node à GUI (thread-safe via after)
             try:
@@ -98,6 +103,7 @@ class NodeGUI:
         self.running = True
         self.status_label.config(text="Iniciado", fg='green')
         self.request_button.config(state='normal')
+        self.name_entry.config(state='disabled')
         self.start_button.config(state='disabled')
         self.log(f"Nó {name} iniciado.")
 
@@ -126,6 +132,12 @@ class NodeGUI:
             threading.Thread(target=self.node.pedir_acesso, args=(time.time(), self.node.uri), daemon=True).start()
             self.log("Pedido de acesso enviado.")
             # Atualiza imediatamente para refletir WANTED e depois o polling mantém
+            self.update_status()
+
+    def release_access(self):
+        if self.node:
+            threading.Thread(target=self.node.liberar_acesso, daemon=True).start()
+            self.log("Liberando Acesso")
             self.update_status()
 
     def update_status(self):
