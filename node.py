@@ -99,10 +99,6 @@ class Node(object):
                     proxy._pyroRelease()
                 if key in self.nodes_ativos:
                     self.nodes_ativos.remove(key)
-                    
-            finally:
-                if proxy is not None and timeout_original is not None:
-                    proxy._pyroTimeout = timeout_original
 
         if respostas_positivas == total_esperado:
             self.estado = HELD
@@ -151,7 +147,7 @@ class Node(object):
         if pedidos:
             self._log_console(f"Processando {len(pedidos)} pedido(s) enfileirado(s) ao liberar acesso.")
         for tempo, uri in pedidos:
-            self._notificar_resposta_deferida(tempo, uri)
+            self.notificar_resposta(tempo, uri)
         
     @expose
     @oneway
@@ -179,7 +175,7 @@ class Node(object):
         itens.sort(key=lambda x: x[0]) #ordena pelo tempo [(tempo, uri)]
         return itens
 
-    def _notificar_resposta_deferida(self, tempo: float, uri: str):
+    def notificar_resposta(self, tempo: float, uri: str):
         try:
             proxy = Proxy(uri)
             proxy._pyroClaimOwnership()
