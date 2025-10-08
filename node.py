@@ -49,6 +49,7 @@ class Node(object):
         self.ns = 0
         self._log_callback = None
         self.tempo_pedido = None
+        self.respostas_positivas_atual = 0
 
     def set_logger(self, callback):
         self._log_callback = callback
@@ -73,7 +74,7 @@ class Node(object):
 
         ativos = list(self.nodes_ativos)
         total_esperado = 0
-        respostas_positivas = 0
+        self.respostas_positivas_atual = 0
 
         for uri in ativos:
             proxy = None
@@ -88,7 +89,7 @@ class Node(object):
                 concedeu = bool(proxy.ceder_acesso(mensagem))
                 total_esperado += 1
                 if concedeu:
-                    respostas_positivas += 1
+                    self.respostas_positivas_atual += 1
 
                 key = proxy._pyroUri
                 self.num_falhas_heartbeat[key] = 0
@@ -100,14 +101,14 @@ class Node(object):
                 if key in self.nodes_ativos:
                     self.nodes_ativos.remove(key)
 
-        if respostas_positivas == total_esperado:
+        if self.respostas_positivas_atual == total_esperado:
             self.estado = HELD
-            self._log(f"ENTROU na seção crítica (todas as respostas positivas: {respostas_positivas}/{total_esperado}). Agora COM ACESSO ao recurso.")
+            self._log(f"ENTROU na seção crítica (todas as respostas positivas: {self.respostas_positivas_atual}/{total_esperado}). Agora COM ACESSO ao recurso.")
             self.timer = threading.Timer(MAX_ACCESS_TIME, self.liberar_acesso)
             self.timer.start()
             return True
         else:
-            self._log_console(f"NÃO entrou na seção crítica (respostas positivas: {respostas_positivas}/{total_esperado}). Permanecendo em WANTED.")
+            self._log_console(f"NÃO entrou na seção crítica (respostas positivas: {self.respostas_positivas_atual}/{total_esperado}). Permanecendo em WANTED.")
             return False
     
     @expose
@@ -157,15 +158,13 @@ class Node(object):
 
     @expose
     @oneway
-    def notificar_liberacao(self, remetente_nome: str, remetente_uri: str, tempo_pedido: float):
+    def notificar_liberacao(self, remetente_nome):
         self._log_console(f"Notificação de liberação recebida de {remetente_nome}. Reavaliando pedido...")
         if self.estado != HELD:
-            # Tenta novo pedido em background para não bloquear
-            threading.Thread(
-                target=self.pedir_acesso,
-                args=(self.tempo_pedido if self.tempo_pedido is not None else time.time(), self.uri),
-                daemon=True
-            ).start()
+            #checkar numero de resposta_positiva = peers_ativos
+            self.respostas_positivas_atual += 1
+            if self.respostas_positivas_atual == self.nodes_ativos:
+                self.estado = HELD
         return
 
     def ordena_fila_pedidos(self):
@@ -183,7 +182,7 @@ class Node(object):
           
             timeout_original = proxy._pyroTimeout
             proxy._pyroTimeout = REQUEST_TIMEOUT
-            proxy.notificar_liberacao(self.nome, str(self.uri), tempo)
+            proxy.notificar_liberacao(self.nome, str(self.uri), )
         except Exception as ex:
             key = uri
             self._log_console(f"Falha ao notificar resposta deferida para {key}: {type(ex).__name__}: {ex}")
@@ -207,10 +206,11 @@ class Node(object):
                 p._pyroTimeout = RESPONSE_TIMEOUT
                 p.enviar_heartbeat()
                 self.num_falhas_heartbeat[uri] = 0
+
             except Exception as ex:
                 self.num_falhas_heartbeat[uri] = self.num_falhas_heartbeat.get(uri, 0) + 1
                 self._log_console(f"Nó não respondeu ao heartbeat ({uri}) [falhas={self.num_falhas_heartbeat[uri]}]: {type(ex).__name__}: {ex}")
-                # remove após 3 falhas consecutivas
+
                 if self.num_falhas_heartbeat[uri] >= MAX_ERROR and uri in self.nodes_ativos:
                     self.nodes_ativos.remove(uri)
                     self._log_console(f"Removido nó inativo ({uri}) após falhas consecutivas. (saiu dos nós inscritos)")
@@ -225,13 +225,13 @@ class Node(object):
         self.daemon.requestLoop()
 
     def unregister(self):
-        if self.ns:
-            self.ns.remove(self.nome)
-            self._log("Removido do NameServer (saiu dos nós inscritos no Pyro).")
-    
-            self.daemon.shutdown()
-            self.daemon.close()
-            self._log("Daemon encerrado.")
+        self.ns = locate_ns()
+        self.ns.remove(self.nome)
+        self._log_console("Removido do NameServer (saiu dos nós inscritos no Pyro).")
+
+        self.daemon.shutdown()
+        self.daemon.close()
+        self._log_console("Daemon encerrado.")
     
     def heartbeat_loop(self):
         while True:

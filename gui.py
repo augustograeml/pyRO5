@@ -135,11 +135,11 @@ class NodeGUI:
 
     def on_close(self):
         try:
-            self.running = False
             if self.node:
-                if getattr(self.node, 'estado', RELEASED) == HELD:
+                if self.node.estado == HELD:
                     self.node.liberar_acesso()
-                    self.node.unregister()
+                self.node.unregister()    
+            self.running = False
         finally:
             self.root.destroy()
 
