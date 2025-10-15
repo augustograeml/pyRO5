@@ -76,7 +76,7 @@ class Node(object):
         total_esperado = 0
         self.respostas_positivas_atual = 0
 
-        for uri in ativos:
+        for uri in ativos: #percorre lista de nós ativos e pede acesso
             proxy = None
             timeout_original = None
             try:
@@ -100,17 +100,12 @@ class Node(object):
                     proxy._pyroRelease()
                 if key in self.nodes_ativos:
                     self.nodes_ativos.remove(key)
-
-        if self.respostas_positivas_atual == total_esperado:
-            self.estado = HELD
-            self._log(f"ENTROU na seção crítica (todas as respostas positivas: {self.respostas_positivas_atual}/{total_esperado}). Agora COM ACESSO ao recurso.")
-            self.timer = threading.Timer(MAX_ACCESS_TIME, self.liberar_acesso)
-            self.timer.start()
-            return True
-        else:
-            self._log_console(f"NÃO entrou na seção crítica (respostas positivas: {self.respostas_positivas_atual}/{total_esperado}). Permanecendo em WANTED.")
-            return False
-    
+        self._log_console('estou preso')
+        self.verifica_resposta()
+            
+                
+           
+        
     @expose
     def ceder_acesso(self,mensagem):
         if self.estado == RELEASED:
@@ -144,9 +139,8 @@ class Node(object):
         self.estado = RELEASED
         self.tempo_pedido = None
         self.timer = None
-        pedidos = self.ordena_fila_pedidos()
-        if pedidos:
-            self._log_console(f"Processando {len(pedidos)} pedido(s) enfileirado(s) ao liberar acesso.")
+        print(f"pedidos = {self.fila_pedidos.get()}")
+        pedidos = self.fila_pedidos
         for tempo, uri in pedidos:
             self.notificar_resposta(tempo, uri)
         
@@ -158,13 +152,13 @@ class Node(object):
 
     @expose
     @oneway
-    def notificar_liberacao(self, remetente_nome):
+    def notificar_liberacao(self, remetente_nome, uri):
         self._log_console(f"Notificação de liberação recebida de {remetente_nome}. Reavaliando pedido...")
         if self.estado != HELD:
-            #checkar numero de resposta_positiva = peers_ativos
             self.respostas_positivas_atual += 1
-            if self.respostas_positivas_atual == self.nodes_ativos:
-                self.estado = HELD
+            self._log_console(f"Notificação de liberação recebida de {remetente_nome}. Reavaliando pedido...")
+            self.verifica_resposta()
+
         return
 
     def ordena_fila_pedidos(self):
@@ -195,6 +189,7 @@ class Node(object):
     def gerencia_heartbeat(self):
         time.sleep(2)
         self._log_console("Dormindo...")
+        self._log_console(f"Nós ativos -> {len(self.nodes_ativos)}\n Respostas Positivas:{self.respostas_positivas_atual} ")
 
         nodes_copia = list(self.nodes_ativos)
         for uri in nodes_copia:
@@ -255,6 +250,16 @@ class Node(object):
                         self._log_console(f"Nó {e} adicionado à lista de ativos. Total: {len(self.nodes_ativos)}")
             
             time.sleep(3)
+    def verifica_resposta(self):
+         if self.respostas_positivas_atual == len(self.nodes_ativos):
+            self.estado = HELD
+            self._log(f"ENTROU na seção crítica (todas as respostas positivas: {self.respostas_positivas_atual}/{len(self.nodes_ativos)}). Agora COM ACESSO ao recurso.")
+            self.timer = threading.Timer(MAX_ACCESS_TIME, self.liberar_acesso)
+            self.timer.start()
+            return True
+         else:
+            return False
+           
 
 if __name__ == "__main__":
     ns = locate_ns()
