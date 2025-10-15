@@ -43,7 +43,7 @@ class Node(object):
         self.daemon = Daemon()
         self.uri = self.daemon.register(self)
         self.nodes_ativos = []
-        self.fila_pedidos = Queue()
+        self.fila_pedidos = list()
         self.timer = None
         self.num_falhas_heartbeat = {}
         self.ns = 0
@@ -139,8 +139,7 @@ class Node(object):
         self.estado = RELEASED
         self.tempo_pedido = None
         self.timer = None
-        print(f"pedidos = {self.fila_pedidos.get()}")
-        pedidos = self.fila_pedidos
+        pedidos = self.fila_pedidos.copy()
         for tempo, uri in pedidos:
             self.notificar_resposta(tempo, uri)
         
@@ -176,7 +175,7 @@ class Node(object):
           
             timeout_original = proxy._pyroTimeout
             proxy._pyroTimeout = REQUEST_TIMEOUT
-            proxy.notificar_liberacao(self.nome, str(self.uri), )
+            proxy.notificar_liberacao(self.nome, str(self.uri) )
         except Exception as ex:
             key = uri
             self._log_console(f"Falha ao notificar resposta deferida para {key}: {type(ex).__name__}: {ex}")
