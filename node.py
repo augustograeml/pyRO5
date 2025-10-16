@@ -1,23 +1,25 @@
+from apscheduler.schedulers.background import BackgroundScheduler
 import argparse
+from gui import NodeGUI
+from Pyro5.api import expose,Proxy,oneway, locate_ns, Daemon
 import textwrap
 import threading
-from Pyro5.api import expose,Proxy,oneway, locate_ns, Daemon
 import time
-from queue import Queue
-import json
-from Pyro5.nameserver import start_ns
 import tkinter as tk
-from gui import NodeGUI
 
 RELEASED = 0
 WANTED = 1 
 HELD = 2
 
 MAX_ACCESS_TIME = 10
+
 REQUEST_TIMEOUT = 2.0
 RESPONSE_TIMEOUT = 2.0
+
 MAX_ERROR = 3
 
+HEARTBEAT_INTERVAL = 10
+HEARTBEAT_CHECK = 15
 
 parser = argparse.ArgumentParser(
     description="Cliente peer to peeim",
@@ -33,6 +35,7 @@ args = parser.parse_args()
 if args.name:
     print(f"Meu nome é {args.name}")
 
+
 class Node(object):
     def __init__(self, name_or_args):
         if isinstance(name_or_args, str):
@@ -43,6 +46,7 @@ class Node(object):
         self.daemon = Daemon()
         self.uri = self.daemon.register(self)
         self.nodes_ativos = []
+        self.peers_ativos = {}
         self.fila_pedidos = list()
         self.timer = None
         self.num_falhas_heartbeat = {}
@@ -50,6 +54,42 @@ class Node(object):
         self._log_callback = None
         self.tempo_pedido = None
         self.respostas_positivas_atual = 0
+        self.ultimo_heartbeat = {}
+        self.respostas_positivas = {}
+
+        self.scheduler = BackgroundScheduler()
+        self.scheduler.add_job(self.envia_heartbeat, 'interval', seconds=HEARTBEAT_INTERVAL)
+        self.scheduler.add_job(self.checa_heartbeats, 'interval', seconds=HEARTBEAT_CHECK)
+        self.scheduler.start()
+
+    def envia_heartbeat(self):
+        for uri in self.nodes_ativos:
+            try:
+                peer = Proxy(uri)
+                peer._pyroClaimOwnership()
+                peer.recebe_heartbeat(self.uri)
+            except Exception:
+                print(f"[{self.nome}] Falha ao enviar heartbeat para {uri}.")
+
+    def checa_heartbeats(self):
+        agora = time.time()
+        remove_peers = False
+        for uri, ultimo in list(self.ultimo_heartbeat.items()):
+            if uri in self.nodes_ativos and agora - ultimo > (HEARTBEAT_INTERVAL * 2):
+                print(f"[{self.nome}] Removendo peer inativo: {uri}")
+                self.peers_ativos.pop(uri, None)
+                remove_peers = True
+        if remove_peers:
+            self.verifica_resposta()
+
+    @expose
+    @oneway
+    def recebe_heartbeat(self, uri):
+        self.ultimo_heartbeat[uri] = time.time()
+
+    def entra_sc(self):
+        print(f"[{self.nome}] Entrou na seção crítica.")
+        self.estado = HELD
 
     def set_logger(self, callback):
         self._log_callback = callback
@@ -114,7 +154,7 @@ class Node(object):
             return True
         elif self.estado == HELD:
             # Não pode conceder agora, enfileira
-            self.fila_pedidos.put(mensagem)
+            self.fila_pedidos.append(mensagem)
             req_ts, req_uri = mensagem
             self._log_console(f"Deferindo (HELD). Pedido de {req_uri} enfileirado (ts={req_ts}).")
             return False
@@ -210,8 +250,6 @@ class Node(object):
                     self._log_console(f"Removido nó inativo ({uri}) após falhas consecutivas. (saiu dos nós inscritos)")
         
     def run(self):
-        heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
-        heartbeat_thread.start()
 
         novos_nos_thread = threading.Thread(target=self.cadastra_novos_nos, args=(self.ns,), daemon=True)
         novos_nos_thread.start()
