@@ -46,7 +46,6 @@ class Node(object):
         self.daemon = Daemon()
         self.uri = self.daemon.register(self)
         self.nodes_ativos = []
-        self.peers_ativos = {}
         self.fila_pedidos = list()
         self.timer = None
         self.num_falhas_heartbeat = {}
@@ -67,18 +66,28 @@ class Node(object):
             try:
                 peer = Proxy(uri)
                 peer._pyroClaimOwnership()
+                peer._pyroBind()
+                
                 peer.recebe_heartbeat(self.uri)
-            except Exception:
-                print(f"[{self.nome}] Falha ao enviar heartbeat para {uri}.")
+            except Exception as e:
+                print(f"[{self.nome}] Falha ao enviar heartbeat para {uri}. \n Motivo {e}.")
 
     def checa_heartbeats(self):
         agora = time.time()
         remove_peers = False
-        for uri, ultimo in list(self.ultimo_heartbeat.items()):
-            if uri in self.nodes_ativos and agora - ultimo > (HEARTBEAT_INTERVAL * 2):
-                print(f"[{self.nome}] Removendo peer inativo: {uri}")
-                self.peers_ativos.pop(uri, None)
-                remove_peers = True
+        #for uri, ultimo in list(self.ultimo_heartbeat.get()):
+        for a in self.ultimo_heartbeat.keys():
+            uri = a
+        print(uri)
+        print(self.nodes_ativos)
+        print(f"{agora}\t{self.ultimo_heartbeat.get(uri)}")
+        print(agora-self.ultimo_heartbeat.get(uri))
+        print((HEARTBEAT_INTERVAL * 2))
+        print(f"{str(uri) in self.nodes_ativos}\t OR \t{int(agora - self.ultimo_heartbeat.get(uri)) > (HEARTBEAT_INTERVAL * 2)}" )
+        if (str(uri) in self.nodes_ativos) and int(agora - self.ultimo_heartbeat.get(uri)) > (HEARTBEAT_INTERVAL * 2):
+            print(f"[{self.nome}] Removendo peer inativo: {uri}")
+            self.nodes_ativos.remove(str(uri))
+            remove_peers = True
         if remove_peers:
             self.verifica_resposta()
 
@@ -170,7 +179,7 @@ class Node(object):
                 self._log_console(f"Concedendo (WANTED) para {other_id} ts={req_ts} (meu ts={my_ts}).")
                 return True
             else:
-                self.fila_pedidos.put(mensagem)
+                self.fila_pedidos.append(mensagem)
                 self._log_console(f"Deferindo (WANTED) para {other_id} ts={req_ts} (meu ts={my_ts}). Pedido enfileirado.")
                 return False
             
@@ -200,12 +209,6 @@ class Node(object):
 
         return
 
-    def ordena_fila_pedidos(self):
-        itens = []
-        for e in range(0,self.fila_pedidos.qsize()):
-            itens.append(self.fila_pedidos.get_nowait())
-        itens.sort(key=lambda x: x[0]) #ordena pelo tempo [(tempo, uri)]
-        return itens
 
     def notificar_resposta(self, tempo: float, uri: str):
         try:
