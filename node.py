@@ -68,7 +68,8 @@ class Node(object):
                 # Remove o nó inativo, ultimo heartbeat dele e checa se pode entrar na SC
                 self.nodes_ativos.remove(uri)
                 self.ultimo_heartbeat.pop(uri, None)
-                self.respostas_positivas_atual -= 1
+                if(self.respostas_positivas_atual >= len(self.nodes_ativos)):
+                    self.respostas_positivas_atual -= 1
                 print(f"Essas são as respostas atuais {self.respostas_positivas_atual} e esse é o num de nós ativos {len(self.nodes_ativos)}")
                 self.verifica_resposta()
 
