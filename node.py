@@ -50,7 +50,6 @@ class Node(object):
         self.tempo_pedido = None
         self.respostas_positivas_atual = 0
         self.ultimo_heartbeat = {}
-        self.respostas_positivas = {}
 
         self.scheduler = BackgroundScheduler()
         self.scheduler.add_job(self.envia_heartbeat, 'interval', seconds=HEARTBEAT_INTERVAL)
@@ -69,6 +68,8 @@ class Node(object):
                 # Remove o nó inativo, ultimo heartbeat dele e checa se pode entrar na SC
                 self.nodes_ativos.remove(uri)
                 self.ultimo_heartbeat.pop(uri, None)
+                self.respostas_positivas_atual -= 1
+                print(f"Essas são as respostas atuais {self.respostas_positivas_atual} e esse é o num de nós ativos {len(self.nodes_ativos)}")
                 self.verifica_resposta()
 
     @expose
@@ -92,6 +93,7 @@ class Node(object):
             self.verifica_resposta()
 
     def verifica_resposta(self):
+        print(f"Meu nome é {self.nome} tenho {self.respostas_positivas_atual} respostas positivas e existem {len(self.nodes_ativos)} nós ativos")
         if self.estado == WANTED and self.respostas_positivas_atual == len(self.nodes_ativos):
             self.estado = HELD
             self._log(f"ENTROU na seção crítica (todas as respostas positivas: {self.respostas_positivas_atual}/{len(self.nodes_ativos)}). Agora COM ACESSO ao recurso.")
@@ -109,26 +111,20 @@ class Node(object):
         if self.tempo_pedido is None:
             self.tempo_pedido = tempo
         self.estado = WANTED
-        mensagem = (self.tempo_pedido, uri)
-
-#       total_esperado = 0
+        mensagem = (uri)
         self.respostas_positivas_atual = 0
 
         for uri in self.nodes_ativos: #percorre lista de nós ativos e pede acesso
             proxy = None
-            #timeout_original = None
             try:
                 proxy = Proxy(uri)
                 proxy._pyroClaimOwnership()
-                #timeout_original = proxy._pyroTimeout
                 proxy._pyroTimeout = REQUEST_TIMEOUT
 
                 concedeu = bool(proxy.ceder_acesso(mensagem))
                 #total_esperado += 1
                 if concedeu:
                     self.respostas_positivas_atual += 1
- #              key = proxy._pyroUri
- #              self.num_falhas_heartbeat[key] = 0
             except Exception as ex:
                 self._log_console(f"Timeout/erro aguardando resposta. Removendo nó. Motivo: {type(ex).__name__}: {ex}")
                 if proxy is not None:
@@ -144,28 +140,19 @@ class Node(object):
     @expose
     def ceder_acesso(self,mensagem):
         if self.estado == RELEASED:
-            req_ts, req_uri = mensagem
-            self._log_console(f"Concedendo acesso para pedido de {req_uri} (ts={req_ts}).")
+            req_uri = mensagem
+            self._log_console(f"Concedendo acesso para pedido de {req_uri} .")
             return True
         elif self.estado == HELD:
             # Não pode conceder agora, enfileira
             self.fila_pedidos.append(mensagem)
-            req_ts, req_uri = mensagem
-            self._log_console(f"Deferindo (HELD). Pedido de {req_uri} enfileirado (ts={req_ts}).")
+            req_uri = mensagem
+            self._log_console(f"Deferindo (HELD). Pedido de {req_uri} enfileirado.")
             return False
         else:
-            req_ts, req_uri = mensagem
-            my_ts = self.tempo_pedido if self.tempo_pedido is not None else float('inf')
-            my_id = str(self.uri)
-            other_id = str(req_uri)
-            concede = (req_ts < my_ts) or (req_ts == my_ts and other_id < my_id)
-            if concede:
-                self._log_console(f"Concedendo (WANTED) para {other_id} ts={req_ts} (meu ts={my_ts}).")
-                return True
-            else:
-                self.fila_pedidos.append(mensagem)
-                self._log_console(f"Deferindo (WANTED) para {other_id} ts={req_ts} (meu ts={my_ts}). Pedido enfileirado.")
-                return False
+            self.fila_pedidos.append(mensagem)
+            self._log_console(f"Deferindo (WANTED). Pedido enfileirado.")
+            return False
             
     def liberar_acesso(self):
         if self.estado != HELD:
@@ -176,9 +163,11 @@ class Node(object):
 
         self._log(f"Liberando/Perdendo acesso ao recurso (timeout {MAX_ACCESS_TIME}s atingido).")
         self.estado = RELEASED
+        self.respostas_positivas_atual = 0
         
         pedidos = self.fila_pedidos.copy()
-        for tempo, uri in pedidos:
+        print(f"Esses são os pedidos {pedidos}")
+        for uri in pedidos:
             self.notificar_resposta(uri)
         # limpando, pois já respondeu para todos
         self.fila_pedidos.clear()
@@ -190,9 +179,7 @@ class Node(object):
             proxy = Proxy(uri)
             proxy._pyroClaimOwnership()
             proxy._pyroBind()
-            #timeout_original = proxy._pyroTimeout
             proxy._pyroTimeout = REQUEST_TIMEOUT
-#           proxy.notificar_liberacao(self.nome, str(self.uri) )
             proxy.notificar_liberacao(self.nome)
         except Exception as ex:
             key = uri
@@ -203,8 +190,6 @@ class Node(object):
                     break
 
     @expose
-    @oneway
-#   def notificar_liberacao(self, remetente_nome, uri):
     def notificar_liberacao(self, remetente_nome):
         if self.estado != HELD:
             self.respostas_positivas_atual += 1
@@ -271,49 +256,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = NodeGUI(root, node=n)
     root.mainloop()
-
-# comentei essas abaixo porque não estão usando
-    
-#    def heartbeat_loop(self):
-#        while True:
-#            try:
-#                self.gerencia_heartbeat()
-#            except Exception as e:
-#                self._log_console(f"Erro no heartbeat: {e}")
-#                time.sleep(1) 
-
-#  def entra_sc(self):
-#     print(f"[{self.nome}] Entrou na seção crítica.")
-#     self.estado = HELD
-
-    
-
-# def gerencia_heartbeat(self):
-#           time.sleep(2)
-#           self._log_console("Dormindo...")
-#           self._log_console(f"Nós ativos -> {len(self.nodes_ativos)}\n Respostas Positivas:{self.respostas_positivas_atual} ")
-
-#           nodes_copia = list(self.nodes_ativos)
-#           for uri in nodes_copia:
-#               self._log_console(f"Enviando heartbeat para nó com URI: {uri}")
-#               try:
-#                   p = Proxy(uri)
-#                   p._pyroClaimOwnership()
-
-#                   p._pyroTimeout = RESPONSE_TIMEOUT
-#                   p.enviar_heartbeat()
-#                   self.num_falhas_heartbeat[uri] = 0
-
-#               except Exception as ex:
-#                   self.num_falhas_heartbeat[uri] = self.num_falhas_heartbeat.get(uri, 0) + 1
-#                   self._log_console(f"Nó não respondeu ao heartbeat ({uri}) [falhas={self.num_falhas_heartbeat[uri]}]: {type(ex).__name__}: {ex}")
-
-#                  if self.num_falhas_heartbeat[uri] >= MAX_ERROR and uri in self.nodes_ativos:
-#                      self.nodes_ativos.remove(uri)
-#                      self._log_console(f"Removido nó inativo ({uri}) após falhas consecutivas. (saiu dos nós inscritos)")
-
-#   @expose
-#   @oneway
-#   def enviar_heartbeat(self):
-#       self._log_console("Heartbeat recebido.")
-#       return
